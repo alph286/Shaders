@@ -93,10 +93,14 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     float ring = 0.5 + 0.5 * sin(rad * 8.0 - t * 1.6 + flame * 2.5);
     flame = mix(flame, clamp(flame * 0.65 + ring * 0.55, 0.0, 1.0), 0.5);
 
-    // holy rays: an integer number of beams radiating from the center.
-    // cos(N*ang) is exactly 2*pi periodic for integer N, so it wraps
-    // around the circle with zero seam/discontinuity.
-    float rays = pow(0.5 + 0.5 * cos(ang * 10.0 - t * 0.4), 3.0);
+    // holy rays: an integer number of beams radiating from the center,
+    // but twisted into a spiral — the twist grows with radius and drifts
+    // over time, and the flame noise adds an organic, tangled wobble.
+    // The twist depends only on rad/t/flame (never on ang itself), so
+    // cos(N*(ang+twist)) is still exactly 2*pi periodic in ang — the
+    // beams coil around each other with zero seam/discontinuity.
+    float twist = rad * 7.0 - t * 0.7 + (flame - 0.5) * 2.5;
+    float rays = pow(0.5 + 0.5 * cos((ang + twist) * 8.0), 3.0);
     rays *= smoothstep(0.85, 0.1, rad);
 
     // soft, feathered falloff instead of a hard circle edge — the shape
