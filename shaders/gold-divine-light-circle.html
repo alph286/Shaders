@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<title>Gold Divine Light Circle</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    /* checkerboard just to visualize transparency while previewing */
+    background-color: #1a1a1a;
+    background-image:
+      linear-gradient(45deg, #2a2a2a 25%, transparent 25%),
+      linear-gradient(-45deg, #2a2a2a 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #2a2a2a 75%),
+      linear-gradient(-45deg, transparent 75%, #2a2a2a 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+  }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script id="vs" type="x-shader/x-vertex">#version 300 es
+in vec2 aPos;
+void main() {
+    gl_Position = vec4(aPos, 0.0, 1.0);
+}
+</script>
+<script id="fs" type="x-shader/x-fragment">#version 300 es
+precision highp float;
+out vec4 fragColor;
+
+uniform vec2 iResolution;
+uniform float iTime;
+
+// ---- Hash / Noise (procedural-noise technique) ----
+float hash(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+float noise(vec2 x) {
+    vec2 p = floor(x);
+    vec2 f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash(p + vec2(0.0, 0.0));
+    float b = hash(p + vec2(1.0, 0.0));
+    float c = hash(p + vec2(0.0, 1.0));
+    float d = hash(p + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+const mat2 m = mat2(1.6, 1.2, -1.2, 1.6);
+float fbm(vec2 p) {
+    float f = 0.0, a = 0.5;
+    for (int i = 0; i < 5; i++) {
+        f += a * noise(p);
+        p = m * p;
+        a *= 0.5;
+    }
+    return f;
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 p = (2.0 * fragCoord - iResolution.xy) / iResolution.y;
+    float t = iTime;
+
+    float rad = length(p);
+    float ang = atan(p.y, p.x);
+
+    // cartesian domain warp for organic turbulence — gentler and slower
+    // than the fire variants, for a calm radiant glow instead of chaotic flame
+    vec2 q = p * 1.8;
+    vec2 warpA = vec2(fbm(q + vec2(0.0, -t * 0.18)), fbm(q + vec2(5.1, t * 0.14)));
+    vec2 warped = q + (warpA - 0.5) * 0.9;
+
+    float flame = fbm(warped * 1.4);
+    flame = mix(flame, fbm(warped * 2.4 + warpA * 1.2), 0.3);
+    flame = clamp(flame * 1.1, 0.0, 1.0);
+
+    // traveling ring wave: soft pulses of light breathing outward from
+    // the center, slower and gentler than a fire flicker
+    float ring = 0.5 + 0.5 * sin(rad * 8.0 - t * 1.6 + flame * 2.5);
+    flame = mix(flame, clamp(flame * 0.65 + ring * 0.55, 0.0, 1.0), 0.5);
+
+    // holy rays: an integer number of beams radiating from the center.
+    // cos(N*ang) is exactly 2*pi periodic for integer N, so it wraps
+    // around the circle with zero seam/discontinuity.
+    float rays = pow(0.5 + 0.5 * cos(ang * 10.0 - t * 0.4), 3.0);
+    rays *= smoothstep(0.85, 0.1, rad);
+
+    // soft, feathered falloff instead of a hard circle edge — the shape
+    // dissolves gradually into transparency. Wider than the fire variants
+    // so the divine light reads as a broad radiant glow.
+    float baseRadius = 0.42;
+    float feather = 0.5;
+    float radialFalloff = 1.0 - smoothstep(baseRadius - feather, baseRadius + feather, rad);
+    float density = radialFalloff * (0.7 + 0.3 * flame) + rays * radialFalloff * 0.35;
+    density = clamp(density, 0.0, 1.0);
+
+    // brightness never drops low — divine light stays luminous throughout,
+    // only brightening further toward the core and along the rays
+    float heat = mix(0.55, 0.95, flame);
+    heat = clamp(heat + rays * 0.4, 0.0, 1.2);
+
+    // radiant white-gold core
+    float core = smoothstep(0.32, 0.0, rad);
+    heat = clamp(heat + core * core * 0.7, 0.0, 1.4);
+
+    // golden divine palette: warm gold base -> radiant amber -> white-gold hot core
+    vec3 col;
+    col.r = 0.45 + heat * 0.55;
+    col.g = 0.32 + heat * 0.58;
+    col.b = pow(heat, 2.6) * 0.42;
+    col = clamp(col, 0.0, 1.0);
+
+    float alpha = density;
+    fragColor = vec4(col * alpha, alpha);
+}
+
+void main() {
+    mainImage(fragColor, gl_FragCoord.xy);
+}
+</script>
+<script>
+let startTime = Date.now();
+
+const canvas = document.getElementById('canvas');
+const gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: false });
+if (!gl) {
+    alert('WebGL2 non supportato da questo browser.');
+}
+
+function compileShader(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source.trim());
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(shader));
+    }
+    return shader;
+}
+
+const vsSource = document.getElementById('vs').text;
+const fsSource = document.getElementById('fs').text;
+const vs = compileShader(gl.VERTEX_SHADER, vsSource);
+const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
+
+const program = gl.createProgram();
+gl.attachShader(program, vs);
+gl.attachShader(program, fs);
+gl.linkProgram(program);
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(program));
+}
+gl.useProgram(program);
+
+const quad = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(program, 'aPos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const uResolution = gl.getUniformLocation(program, 'iResolution');
+const uTime = gl.getUniformLocation(program, 'iTime');
+
+gl.enable(gl.BLEND);
+gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+gl.clearColor(0, 0, 0, 0);
+
+function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.floor(window.innerWidth * dpr);
+    canvas.height = Math.floor(window.innerHeight * dpr);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+}
+window.addEventListener('resize', resize);
+resize();
+
+function render() {
+    const time = (Date.now() - startTime) / 1000.0;
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform2f(uResolution, canvas.width, canvas.height);
+    gl.uniform1f(uTime, time);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    requestAnimationFrame(render);
+}
+render();
+</script>
+</body>
+</html>
