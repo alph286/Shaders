@@ -71,49 +71,57 @@ float fbm(vec2 p) {
     return f;
 }
 
-// ---- SDF (sdf-2d technique) ----
-float sdCircle(vec2 p, float r) { return length(p) - r; }
-
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     vec2 p = (2.0 * fragCoord - iResolution.xy) / iResolution.y;
     float t = iTime;
 
-    float radius = 0.55;
     float rad = length(p);
-    float ang = atan(p.y, p.x);
 
-    // domain-warped turbulence: noise feeds back into its own coordinates
-    // so the flame looks chaotic instead of a radial "sunburst"
-    vec2 q = p * 2.6;
-    vec2 warpA = vec2(fbm(q + vec2(0.0, -t * 1.1)), fbm(q + vec2(5.2, -t * 0.9)));
-    vec2 warped = q + (warpA - 0.5) * 1.8 - vec2(0.0, t * 0.6);
+    // cartesian domain warp for organic turbulence — built only from p
+    // and time (no angle, no radial-line sampling), so it never seams
+    // and never collapses into a "sunburst"/pinwheel near the center
+    vec2 q = p * 2.4;
+    vec2 warpA = vec2(fbm(q + vec2(0.0, -t * 0.35)), fbm(q + vec2(5.1, t * 0.28)));
+    vec2 warped = q + (warpA - 0.5) * 1.6;
+
     float flame = fbm(warped * 1.7);
-    flame = mix(flame, fbm(warped * 3.1 + warpA * 2.0), 0.35);
+    flame = mix(flame, fbm(warped * 3.0 + warpA * 1.8), 0.35);
+    flame = clamp(flame * 1.15, 0.0, 1.0);
 
-    // organic flickering edge (fire licks), still a closed filled disk
-    float edgeNoise = fbm(vec2(ang * 3.0 - t * 0.6, t * 0.35)) * 0.05;
-    float d = sdCircle(p, radius + edgeNoise);
+    // traveling ring wave: phase depends on (radius - time), so rings of
+    // brightness continuously expand from the center outward — this is
+    // what actually reads as "flames flowing from the center to the rim"
+    float ring = 0.5 + 0.5 * sin(rad * 10.0 - t * 3.0 + flame * 4.0);
+    flame = mix(flame, clamp(flame * 0.6 + ring * 0.7, 0.0, 1.0), 0.6);
 
-    // anti-aliased fill mask: 1.0 strictly inside, 0.0 strictly outside
-    float px = 1.5 / iResolution.y;
-    float mask = smoothstep(px, -px, d);
+    // soft, feathered falloff instead of a hard circle edge — the shape
+    // dissolves gradually into transparency (top-down brazier glow).
+    // Opacity comes mostly from this shape term, only lightly touched by
+    // the flame noise, so the fire never breaks up into dark "holes".
+    float baseRadius = 0.48;
+    float feather = 0.4;
+    float radialFalloff = 1.0 - smoothstep(baseRadius - feather, baseRadius + feather, rad);
+    float density = radialFalloff * (0.75 + 0.25 * flame);
+    density = clamp(density, 0.0, 1.0);
 
-    // heat value used for the green fire color ramp
-    float heat = clamp(flame + 0.30, 0.0, 1.0);
-    heat = pow(heat, 1.25);
+    // brightness never drops to black — it only ranges from a dim green
+    // glow up to a hot flare, so it always reads as fire, never as smoke
+    float heat = mix(0.3, 0.85, flame);
 
-    // brighter, hotter core toward the center of the disk
-    float core = smoothstep(radius * 0.95, 0.0, rad);
-    heat = mix(heat, clamp(heat + core * 0.5, 0.0, 1.0), 0.6);
+    // small, soft ember glow right at the center — a brightness boost,
+    // not a flat white disc, so the flame texture stays visible
+    float core = smoothstep(0.24, 0.0, rad);
+    heat = clamp(heat + core * core * 0.35, 0.0, 1.0);
 
-    // green fire palette: deep green base -> vivid green -> yellow-green hot spots
+    // green fire palette: deep green base -> vivid green -> pale yellow-green hot spots
     vec3 col;
-    col.r = heat * heat * heat * 0.55;
-    col.g = 0.22 + heat * 1.05;
-    col.b = heat * heat * 0.22;
+    col.r = pow(heat, 2.2) * 0.45;
+    col.g = 0.26 + heat * 0.85;
+    col.b = pow(heat, 3.2) * 0.22;
     col = clamp(col, 0.0, 1.0);
 
-    fragColor = vec4(col * mask, mask);
+    float alpha = density;
+    fragColor = vec4(col * alpha, alpha);
 }
 
 void main() {
