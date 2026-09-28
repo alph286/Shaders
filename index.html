@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>Summoning Circle</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #000;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-user-select: none;
+    user-select: none;
+    overscroll-behavior: none;
+    touch-action: none;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script id="vs" type="x-shader/x-vertex">#version 300 es
+in vec2 aPos;
+void main() {
+    gl_Position = vec4(aPos, 0.0, 1.0);
+}
+</script>
+<!--
+  Ported from "Summoning Circle" by Sam Gates (BackwardsCap), Shadertoy view/wllfR4.
+
+  The original has 4 buffers: Buffer A procedurally draws the rune circle
+  (self-contained, no external input); Buffers B/C/S run a fluid + dye
+  simulation that is only ever perturbed by a webcam channel — with that
+  channel removed there is nothing left to seed the fluid, so it stays at
+  the all-zero rest state forever and contributes nothing to the final
+  image. Those three buffers were dropped entirely; this is the algebraic
+  simplification of the original Image pass once that video term is zero,
+  not a different look. Only Buffer A + the Image compositing survive,
+  fused into one pass (no framebuffers/ping-pong needed since Buffer A is
+  a pure function of position and time).
+-->
+<script id="fs" type="x-shader/x-fragment">#version 300 es
+precision highp float;
+out vec4 fragColor;
+
+uniform vec2 iResolution;
+uniform float iTime;
+uniform vec4 iDate;
+
+#define R iResolution.xy
+#define PI 3.1415927
+#define m vec2(5. + 2. * 4., 10.)
+#define PX (40. / R.y)
+#define SS(U) smoothstep(PX, 0., U)
+#define MORPH
+
+float rand(vec2 p) {
+    float d = iDate.w;
+#ifdef MORPH
+    vec2 pp = p / 20.0;
+    d = floor(d * pp.x * pp.y) / 30.;
+#endif
+    return fract(sin(dot(p.xy, vec2(12389.1283, 8941.1283))) * (12893.128933) + cos(floor(d)));
+}
+
+mat2 rot(float a) { return mat2(cos(a), -sin(a), sin(a), cos(a)); }
+
+// https://www.shadertoy.com/view/4llXD7
+float B(vec2 p, vec2 b, vec4 r) {
+    r.xy = p.x > 0.0 ? r.xy : r.zw;
+    r.x = p.y > 0.0 ? r.x : r.y;
+    vec2 q = abs(p) - b + r.x;
+    return SS(min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r.x);
+}
+
+bool removedTile(float h, vec2 p) {
+    vec2 lp = mod(p, m);
+    float h2 = rand(vec2(20. + h * (floor(p.y)) + 10.84));
+    if (lp.x >= 4. && lp.x < 11. || lp.y >= 6.) return true;
+    return h * dot(h, h2) * 5. <= .5;
+}
+
+float C(vec2 p) { return SS(length(p - .5) - .4); }
+
+float CL(vec2 p, float a) {
+    vec2 bp = (p - .5);
+    bp *= rot(PI / 4. * a);
+    bp.x += .5;
+    return B(bp, vec2(.6, .345), vec4(.3));
+}
+
+float CE(vec2 p, vec2 o) {
+    return B((p + o) * rot(PI / 4.), vec2(.5), vec4(0));
+}
+
+float EL(vec2 p, float t) {
+    vec2 b = vec2(.5, .4 - PX);
+    p -= vec2(.5, .5);
+    p *= rot(PI / 2. * t);
+    p.x += PX;
+    vec4 r = vec4(b.x - b.x / 2., b.x - b.x / 2., 0, 0);
+    return B(p, b, r);
+}
+
+float D(vec2 p, float r) {
+    p -= .5;
+    p *= rot(PI / 2. * r);
+    p += .13;
+    float b1 = B(p, vec2(.5), vec4(.5, 0, 0, 0));
+    p += .77;
+    float b2 = B(p, vec2(.5), vec4(0, 0, 0, .025));
+    return b1 - b2;
+}
+
+float T(vec2 p, float r) {
+    p -= .5;
+    p *= rot(PI / 2. * r);
+    return B(p, vec2(.4 - PX, .6), vec4(0));
+}
+
+float render(vec2 p, float h) {
+    bool neighbors[9];
+    int ul = 6, u = 7, ur = 8, l = 3, me = 4, r = 5, dl = 0, d = 1, dr = 2;
+    int n = 0;
+
+    for (float y = -1.; y <= 1.; y++) {
+        for (float x = -1.; x <= 1.; x++) {
+            int i = int((x + 1.) + (y + 1.) * 3.);
+            vec2 pos = floor(p + vec2(x, y));
+            neighbors[i] = !removedTile(rand(pos), pos);
+            if (i != me && neighbors[i]) n++;
+        }
+    }
+
+    p = fract(p);
+
+    if (neighbors[me]) {
+        if (n == 0) return C(fract(p));
+
+        if (neighbors[u] && neighbors[d]) {
+            float o = T(p, 0.);
+            if (neighbors[l]) o += EL(p + vec2(.175, 0), 0.);
+            if (neighbors[r]) o += EL(p - vec2(.175, 0), 2.);
+            return o;
+        }
+        if (neighbors[l] && neighbors[r]) {
+            float o = T(p, 1.);
+            if (neighbors[u]) o += EL(p - vec2(0, .25), 1.);
+            if (neighbors[d]) o += EL(p + vec2(0, .25), 3.);
+            return o;
+        }
+        if (neighbors[u] && !neighbors[d] && !neighbors[l] && !neighbors[r]) {
+            float o = EL(p - vec2(0, .3), 1.);
+            if (neighbors[dl]) o += CL(p - vec2(.175), 7.);
+            if (neighbors[dr]) o += CL(p - vec2(-.175, .175), 5.);
+            return o;
+        }
+        if (neighbors[d] && !neighbors[u] && !neighbors[l] && !neighbors[r]) {
+            float o = EL(p + vec2(0, .3), 3.);
+            if (neighbors[ul]) o += CL(p + vec2(-.175, .175), 1.);
+            if (neighbors[ur]) o += CL(p + vec2(.175), 3.);
+            return o;
+        }
+        if (neighbors[l] && !neighbors[r] && !neighbors[d] && !neighbors[u]) {
+            float o = EL(p + vec2(.3, 0), 0.);
+            if (neighbors[ur]) o += CL(p + vec2(.175, .175), 3.);
+            if (neighbors[dr]) o += CL(p - vec2(-.175, .175), 5.);
+            return o;
+        }
+        if (neighbors[r] && !neighbors[l] && !neighbors[d] && !neighbors[u]) {
+            float o = EL(p - vec2(.3, 0), 2.);
+            if (neighbors[ul]) o += CL(p + vec2(-.175, .175), 1.);
+            if (neighbors[dl]) o += CL(p - vec2(.175), 7.);
+            return o;
+        }
+
+        float j = 0.0;
+        if (!neighbors[u] && neighbors[r] && !neighbors[l] && neighbors[d]) j += D(p, 3.);
+        if (neighbors[u] && neighbors[r] && !neighbors[l] && !neighbors[d]) j += D(p, 2.);
+        if (!neighbors[u] && !neighbors[r] && neighbors[l] && neighbors[d]) j += D(p, 0.);
+        if (neighbors[u] && !neighbors[r] && neighbors[l] && !neighbors[d]) j += D(p, 1.);
+        if (neighbors[ul] && !neighbors[l] && !neighbors[u]) j += CL(p + vec2(-.175, .175), 1.);
+        if (neighbors[dl] && !neighbors[l] && !neighbors[d]) j += CL(p - vec2(.175), 7.);
+        if (neighbors[ur] && !neighbors[r] && !neighbors[u]) j += CL(p + vec2(.175, .175), 3.);
+        if (neighbors[dr] && !neighbors[r] && !neighbors[d]) j += CL(p - vec2(-.175, .175), 5.);
+        return j;
+    } else {
+        float o = 0.0;
+        if (!neighbors[ul] && neighbors[u] && neighbors[l]) o += CE(p, vec2(.07, -1.15));
+        if (!neighbors[ur] && neighbors[u] && neighbors[r]) o += CE(p, vec2(-1.11));
+        if (!neighbors[dl] && neighbors[d] && neighbors[l]) o += CE(p, vec2(.11));
+        if (!neighbors[dr] && neighbors[d] && neighbors[r]) o += CE(p, vec2(-1.11, .11));
+        return o;
+    }
+}
+
+vec3 circle(vec2 f, vec2 u) {
+    vec2 p = vec2(log(length(u.xy)), atan(u.y, u.x));
+    p *= (6.0 / PI) * 10.85;
+    p += vec2(5., 3.);
+    p.y += iTime * 2.0;
+    p.y = mod(p.y, 10.015 * 13.0) - .2;
+    vec2 lp = p;
+    p = floor(p);
+    float hash = rand(p);
+
+    vec3 col = vec3(0.0);
+    if (p.x >= -5. && p.x <= 4.)
+        col = vec3(clamp(render(lp, hash), 0., 1.)) * min(length(u) * 4., 1.);
+    return col;
+}
+
+void main() {
+    vec2 f = gl_FragCoord.xy;
+    vec2 p = (2.0 * f - R) / R.y;
+
+    vec3 rune = circle(f, p);
+
+    // Original fade-in only finished revealing the circle after ~14s of
+    // iTime (clamp((iTime/2.)-6.,0.,1.)). Shortened here so it appears
+    // almost immediately — raise FADE_START/FADE_LEN to restore the
+    // original slow "summoning" reveal.
+    float FADE_START = 0.3;
+    float FADE_LEN = 2.0;
+    float t = clamp((iTime - FADE_START) / FADE_LEN, 0., 1.);
+
+    // soft vignette so only the very outer edge fades instead of hard-cutting.
+    float vign = 1.0 - smoothstep(0.85, 1.15, length(p));
+
+    vec3 col = vign * rune * t;
+
+    // Splash page: composited straight over the solid black CSS
+    // background, so full opacity everywhere (no transparency needed
+    // here — this file isn't meant to be layered over other content).
+    fragColor = vec4(col, 1.0);
+}
+</script>
+<script>
+let startTime = Date.now();
+
+const canvas = document.getElementById('canvas');
+const gl = canvas.getContext('webgl2', { alpha: false, antialias: false });
+if (!gl) {
+    document.body.style.background = '#000';
+    document.body.innerHTML = '<p style="color:#888;font:14px sans-serif;text-align:center;margin-top:45vh;">WebGL2 non supportato da questo browser.</p>';
+    throw new Error('WebGL2 unavailable');
+}
+
+function compileShader(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source.trim());
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(shader));
+    }
+    return shader;
+}
+
+const vsSource = document.getElementById('vs').text;
+const fsSource = document.getElementById('fs').text;
+const vs = compileShader(gl.VERTEX_SHADER, vsSource);
+const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
+
+const program = gl.createProgram();
+gl.attachShader(program, vs);
+gl.attachShader(program, fs);
+gl.linkProgram(program);
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(program));
+}
+gl.useProgram(program);
+
+const quad = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(program, 'aPos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const uResolution = gl.getUniformLocation(program, 'iResolution');
+const uTime = gl.getUniformLocation(program, 'iTime');
+const uDate = gl.getUniformLocation(program, 'iDate');
+
+gl.clearColor(0, 0, 0, 1);
+
+// Mobile-friendly sizing: track the visual viewport (correct on iOS
+// Safari when the browser chrome shows/hides), cap device pixel ratio
+// so phones don't push more pixels than the effect needs, and
+// re-measure on resize, orientation change, and viewport changes.
+function currentSize() {
+    const vv = window.visualViewport;
+    const w = vv ? vv.width : window.innerWidth;
+    const h = vv ? vv.height : window.innerHeight;
+    return { w, h };
+}
+
+let lastW = 0, lastH = 0;
+function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const { w, h } = currentSize();
+    const width = Math.max(1, Math.floor(w * dpr));
+    const height = Math.max(1, Math.floor(h * dpr));
+    if (width === lastW && height === lastH) return;
+    lastW = width; lastH = height;
+    canvas.width = width;
+    canvas.height = height;
+    gl.viewport(0, 0, width, height);
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', resize);
+if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', resize);
+}
+resize();
+
+function render() {
+    const time = (Date.now() - startTime) / 1000.0;
+    const now = new Date();
+    const secondsSinceMidnight = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds() + now.getMilliseconds() * 0.001;
+
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform2f(uResolution, canvas.width, canvas.height);
+    gl.uniform1f(uTime, time);
+    gl.uniform4f(uDate, now.getFullYear(), now.getMonth(), now.getDate(), secondsSinceMidnight);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    requestAnimationFrame(render);
+}
+render();
+</script>
+</body>
+</html>
