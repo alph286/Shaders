@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<title>Web Area</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background-color: #1a1a1a;
+    background-image:
+      linear-gradient(45deg, #2a2a2a 25%, transparent 25%),
+      linear-gradient(-45deg, #2a2a2a 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #2a2a2a 75%),
+      linear-gradient(-45deg, transparent 75%, #2a2a2a 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+  }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<!--
+  D&D 5e "Web" (Ragnatela): "You conjure a mass of thick, sticky webbing...
+  The webs fill a [cube] for the duration. The webs are difficult terrain
+  and lightly obscure their area... The webs are flammable." (dndbeyond.com)
+
+  Visual approach: a Worley/Voronoi cell-edge pattern reads naturally as a
+  tangled net of sticky strands (not a neat orb-weaver spiral — the spell
+  describes a messy conjured mass, which is exactly what jittered Voronoi
+  edges look like). Two overlaid scales give thick main strands + fine
+  cross-threads, jittered slowly over time for a faint "sticky sway".
+  Square-ish soft-edged area (the spell fills a cube), transparent outside.
+-->
+<script id="vs" type="x-shader/x-vertex">#version 300 es
+in vec2 aPos;
+void main() {
+    gl_Position = vec4(aPos, 0.0, 1.0);
+}
+</script>
+<script id="fs" type="x-shader/x-fragment">#version 300 es
+precision highp float;
+out vec4 fragColor;
+
+uniform vec2 iResolution;
+uniform float iTime;
+
+vec2 hash22(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.xx + p3.yz) * p3.zy);
+}
+
+// F1/F2 Voronoi — jittered cell centers, gently swaying over time
+vec2 voronoiF1F2(vec2 p, float t, float swaySpeed) {
+    vec2 n = floor(p);
+    vec2 f = fract(p);
+    float f1 = 8.0, f2 = 8.0;
+
+    for (int j = -1; j <= 1; j++) {
+        for (int i = -1; i <= 1; i++) {
+            vec2 g = vec2(float(i), float(j));
+            vec2 o = hash22(n + g);
+            o = 0.5 + 0.4 * sin(t * swaySpeed + 6.2831 * o);
+            vec2 r = g + o - f;
+            float d = dot(r, r);
+            if (d < f1) { f2 = f1; f1 = d; }
+            else if (d < f2) { f2 = d; }
+        }
+    }
+    return vec2(sqrt(f1), sqrt(f2));
+}
+
+float strands(vec2 p, float scale, float thickness, float t, float swaySpeed) {
+    vec2 fg = voronoiF1F2(p * scale, t, swaySpeed);
+    float edge = fg.y - fg.x;
+    return exp(-edge * thickness);
+}
+
+void main() {
+    vec2 p = (2.0 * gl_FragCoord.xy - iResolution.xy) / iResolution.y;
+    float t = iTime;
+
+    // three overlaid scales (coarse/medium/fine) so the webbing reads as a
+    // dense tangled mass rather than a few sparse lines
+    float coarse = strands(p, 2.4, 9.0, t, 0.2);
+    float main = strands(p, 4.5, 11.0, t, 0.25) * 0.85;
+    float fine = strands(p, 9.0, 16.0, t, 0.4) * 0.6;
+    float mesh = clamp(coarse + main + fine, 0.0, 1.0);
+
+    // faint translucent haze everywhere in the area — the spell also
+    // "lightly obscures" the space, not just the strands themselves
+    float haze = 0.16;
+
+    // patchy density so the webbing looks like an uneven sticky mass,
+    // not a perfectly uniform net
+    float density = 0.75 + 0.25 * sin(dot(floor(p * 2.4), vec2(12.9898, 78.233)) + t * 0.1);
+    mesh *= clamp(density, 0.55, 1.0);
+    mesh = clamp(mesh + haze, 0.0, 1.0);
+
+    // square-ish area (the spell fills a cube), soft feathered edge
+    vec2 ap = abs(p);
+    float edgeDist = max(ap.x, ap.y);
+    float areaMask = 1.0 - smoothstep(0.72, 0.95, edgeDist);
+
+    // pale, slightly grey-blue sticky webbing color
+    vec3 col = vec3(0.90, 0.93, 0.95);
+
+    float alpha = clamp(mesh * areaMask * 0.85, 0.0, 1.0);
+    fragColor = vec4(col * alpha, alpha);
+}
+</script>
+<script>
+let startTime = Date.now();
+
+const canvas = document.getElementById('canvas');
+const gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: false });
+if (!gl) {
+    alert('WebGL2 non supportato da questo browser.');
+}
+
+function compileShader(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source.trim());
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(shader));
+    }
+    return shader;
+}
+
+const vsSource = document.getElementById('vs').text;
+const fsSource = document.getElementById('fs').text;
+const vs = compileShader(gl.VERTEX_SHADER, vsSource);
+const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
+
+const program = gl.createProgram();
+gl.attachShader(program, vs);
+gl.attachShader(program, fs);
+gl.linkProgram(program);
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(program));
+}
+gl.useProgram(program);
+
+const quad = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(program, 'aPos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const uResolution = gl.getUniformLocation(program, 'iResolution');
+const uTime = gl.getUniformLocation(program, 'iTime');
+
+gl.enable(gl.BLEND);
+gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+gl.clearColor(0, 0, 0, 0);
+
+function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.floor(window.innerWidth * dpr);
+    canvas.height = Math.floor(window.innerHeight * dpr);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+}
+window.addEventListener('resize', resize);
+resize();
+
+function render() {
+    const time = (Date.now() - startTime) / 1000.0;
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform2f(uResolution, canvas.width, canvas.height);
+    gl.uniform1f(uTime, time);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    requestAnimationFrame(render);
+}
+render();
+</script>
+</body>
+</html>
