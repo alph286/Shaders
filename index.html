@@ -59,7 +59,7 @@ uniform vec4 iDate;
 #define R iResolution.xy
 #define PI 3.1415927
 #define m vec2(5. + 2. * 4., 10.)
-#define PX (40. / R.y)
+#define PX (40. / min(R.x, R.y))
 #define SS(U) smoothstep(PX, 0., U)
 #define MORPH
 
@@ -221,7 +221,12 @@ vec3 circle(vec2 f, vec2 u) {
 
 void main() {
     vec2 f = gl_FragCoord.xy;
-    vec2 p = (2.0 * f - R) / R.y;
+    // Normalize by the SHORTER screen dimension, not always height — on a
+    // tall phone in portrait, R.y is much bigger than R.x, so dividing by
+    // R.y alone let the ring overflow past the left/right edges (only the
+    // top/bottom arcs stayed on screen). min(R.x,R.y) keeps the full
+    // circle inside the viewport in any orientation.
+    vec2 p = (2.0 * f - R) / min(R.x, R.y);
 
     vec3 rune = circle(f, p);
 
