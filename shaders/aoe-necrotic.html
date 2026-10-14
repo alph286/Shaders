@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Necrotico - AOE Magnetron</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1c1a17; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center;
+    background-image: linear-gradient(45deg,#26231f 25%,transparent 25%,transparent 75%,#26231f 75%),
+                      linear-gradient(45deg,#26231f 25%,transparent 25%,transparent 75%,#26231f 75%);
+    background-size: 48px 48px; background-position: 0 0, 24px 24px; }
+  canvas { width: min(92vw, 92vh); height: min(92vw, 92vh); display: block; }
+  #bar { position: fixed; top: 10px; left: 10px; color: #cfc8bd; font: 13px system-ui, sans-serif; }
+  #bar select { font: inherit; }
+</style>
+</head>
+<body>
+<div id="bar">Necrotico &middot; forma: <select id="shape"><option value="0">cerchio</option><option value="1">quadrato</option></select></div>
+<canvas id="c"></canvas>
+
+<script id="fs" type="x-shader/x-fragment">#version 300 es
+precision highp float;
+
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_shape;
+
+out vec4 fragColor;
+
+float hash(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+vec2 hash22(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.xx + p3.yz) * p3.zy);
+}
+
+float noise(vec2 x) {
+    vec2 p = floor(x);
+    vec2 f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash(p);
+    float b = hash(p + vec2(1.0, 0.0));
+    float c = hash(p + vec2(0.0, 1.0));
+    float d = hash(p + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+const mat2 FBM_M = mat2(1.6, 1.2, -1.2, 1.6);
+float fbm(vec2 p) {
+    float f = 0.0, a = 0.5;
+    for (int i = 0; i < 5; i++) {
+        f += a * noise(p);
+        p = FBM_M * p;
+        a *= 0.5;
+    }
+    return f;
+}
+
+// "Raggio" quasi-quadrato: copre bene sia Sfera sia Cubo/Cono/Linea (la
+// sagoma vera la ritaglia comunque la maschera poligonale).
+float areaRadius(vec2 p) {
+    vec2 q = p * p;
+    return sqrt(sqrt(q.x * q.x + q.y * q.y));
+}
+
+// Necrotico: oscurita' viola con filamenti d'ombra risucchiati verso il centro.
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 p = (2.0 * fragCoord - u_resolution.xy) / u_resolution.y;
+    float t = u_time;
+    float d = areaRadius(p);
+    float rad = length(p);
+    float ang = atan(p.y, p.x);
+
+    float n = fbm(p * 2.2 + vec2(0.0, t * 0.1));
+    float n2 = fbm(p * 4.5 - t * 0.12);
+
+    // bande di energia che scorrono verso l'interno
+    float band = pow(0.5 + 0.5 * sin(rad * 7.0 + t * 1.5 + n * 4.0), 3.0);
+    // filamenti radiali (numero intero di raggi: nessuna cucitura in atan)
+    float streak = pow(0.5 + 0.5 * sin(ang * 9.0 + n * 5.0 + rad * 4.0 - t * 0.3), 7.0);
+    float fine = pow(0.5 + 0.5 * sin(ang * 21.0 - n2 * 6.0 + rad * 8.0 + t * 0.4), 9.0);
+    float tend = (streak + fine * 0.6) * (0.25 + 0.75 * band) * smoothstep(0.1, 0.4, rad);
+
+    // buco nero al centro con bordo luminoso
+    float hole = smoothstep(0.22, 0.12, rad);
+    float rim = exp(-abs(rad - 0.23 - 0.02 * sin(t * 1.3)) * 22.0);
+
+    float mask = 1.0 - smoothstep(0.82, 1.16, d);
+    float shade = 0.50 + 0.18 * n;               // velo scuro su tutta l'area
+    float a = clamp(shade + tend * 0.55 + rim * 0.5 + hole, 0.0, 1.0) * mask;
+
+    vec3 void_ = vec3(0.05, 0.0, 0.09);
+    vec3 violet = vec3(0.62, 0.14, 0.95);
+    vec3 magenta = vec3(0.95, 0.30, 0.85);
+    vec3 col = mix(void_, violet, clamp(tend * 1.1 + n2 * 0.15, 0.0, 1.0));
+    col = mix(col, magenta, clamp(rim * 0.8 + tend * 0.25, 0.0, 1.0));
+    col += vec3(0.08, 0.35, 0.14) * tend * smoothstep(0.5, 1.0, d);   // punte verde malato
+    col = mix(col, vec3(0.0), hole);
+    fragColor = vec4(col * a, a);
+}
+
+
+void main() {
+  vec2 fragCoord = gl_FragCoord.xy;
+  vec2 q = (2.0 * fragCoord - u_resolution.xy) / u_resolution.y;
+  vec4 col;
+  mainImage(col, fragCoord);
+  // stessa idea della maschera poligonale di Magnetron: ritaglia la sagoma
+  bool inside = (u_shape == 0) ? (length(q) <= 1.0) : (max(abs(q.x), abs(q.y)) <= 1.0);
+  fragColor = inside ? col : vec4(0.0);
+}
+</script>
+
+<script>
+(function () {
+  const canvas = document.getElementById('c');
+  const gl = canvas.getContext('webgl2');
+  if (!gl) { document.body.textContent = 'WebGL2 non disponibile'; return; }
+  function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  }
+  const vs = compile(gl.VERTEX_SHADER, `#version 300 es
+const vec2 pos[3] = vec2[3](vec2(-1.0,-1.0), vec2(3.0,-1.0), vec2(-1.0,3.0));
+void main() { gl_Position = vec4(pos[gl_VertexID], 0.0, 1.0); }`);
+  const fs = compile(gl.FRAGMENT_SHADER, document.getElementById('fs').textContent.replace(/^\s+/, ''));
+  const prog = gl.createProgram();
+  gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+  const uRes = gl.getUniformLocation(prog, 'u_resolution');
+  const uTime = gl.getUniformLocation(prog, 'u_time');
+  const uShape = gl.getUniformLocation(prog, 'u_shape');
+  const sel = document.getElementById('shape');
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const size = Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.92 * dpr);
+    if (canvas.width !== size) { canvas.width = size; canvas.height = size; }
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  }
+  window.addEventListener('resize', resize); resize();
+  const t0 = performance.now();
+  function frame() {
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+    gl.uniform1f(uTime, (performance.now() - t0) / 1000 + (new URLSearchParams(location.search).get('t') | 0));
+    gl.uniform1i(uShape, +sel.value);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

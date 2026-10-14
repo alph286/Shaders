@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gelo - AOE Magnetron</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1c1a17; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center;
+    background-image: linear-gradient(45deg,#26231f 25%,transparent 25%,transparent 75%,#26231f 75%),
+                      linear-gradient(45deg,#26231f 25%,transparent 25%,transparent 75%,#26231f 75%);
+    background-size: 48px 48px; background-position: 0 0, 24px 24px; }
+  canvas { width: min(92vw, 92vh); height: min(92vw, 92vh); display: block; }
+  #bar { position: fixed; top: 10px; left: 10px; color: #cfc8bd; font: 13px system-ui, sans-serif; }
+  #bar select { font: inherit; }
+</style>
+</head>
+<body>
+<div id="bar">Gelo &middot; forma: <select id="shape"><option value="0">cerchio</option><option value="1">quadrato</option></select></div>
+<canvas id="c"></canvas>
+
+<script id="fs" type="x-shader/x-fragment">#version 300 es
+precision highp float;
+
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_shape;
+
+out vec4 fragColor;
+
+float hash(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+vec2 hash22(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.xx + p3.yz) * p3.zy);
+}
+
+float noise(vec2 x) {
+    vec2 p = floor(x);
+    vec2 f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash(p);
+    float b = hash(p + vec2(1.0, 0.0));
+    float c = hash(p + vec2(0.0, 1.0));
+    float d = hash(p + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+const mat2 FBM_M = mat2(1.6, 1.2, -1.2, 1.6);
+float fbm(vec2 p) {
+    float f = 0.0, a = 0.5;
+    for (int i = 0; i < 5; i++) {
+        f += a * noise(p);
+        p = FBM_M * p;
+        a *= 0.5;
+    }
+    return f;
+}
+
+// "Raggio" quasi-quadrato: copre bene sia Sfera sia Cubo/Cono/Linea (la
+// sagoma vera la ritaglia comunque la maschera poligonale).
+float areaRadius(vec2 p) {
+    vec2 q = p * p;
+    return sqrt(sqrt(q.x * q.x + q.y * q.y));
+}
+
+// Gelo: cristalli che crescono dai bordi, crepe luminose e scintillii.
+vec3 voronoi(vec2 p) {
+    vec2 n = floor(p);
+    vec2 f = fract(p);
+    float f1 = 8.0, f2 = 8.0, id = 0.0;
+    for (int j = -1; j <= 1; j++) {
+        for (int i = -1; i <= 1; i++) {
+            vec2 g = vec2(float(i), float(j));
+            vec2 o = hash22(n + g);
+            vec2 r = g + o - f;
+            float d = dot(r, r);
+            if (d < f1) { f2 = f1; f1 = d; id = hash(n + g); }
+            else if (d < f2) { f2 = d; }
+        }
+    }
+    return vec3(sqrt(f1), sqrt(f2), id);
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 p = (2.0 * fragCoord - u_resolution.xy) / u_resolution.y;
+    float t = u_time;
+    float d = areaRadius(p);
+
+    // fronte del ghiaccio: respira lentamente, frastagliato dal rumore
+    float front = 0.50 + 0.07 * sin(t * 0.5);
+    float edgeNoise = (fbm(p * 3.2 + 4.0) - 0.5) * 0.55;
+    float frost = smoothstep(front, front + 0.45, d + edgeNoise);
+
+    // facce dei cristalli (grandi) e crepe (bordi di Voronoi)
+    vec3 v = voronoi(p * 4.2);
+    float edge = v.y - v.x;
+    float cracks = exp(-edge * 16.0);
+    float facet = 0.5 + 0.5 * sin(t * 0.6 + v.z * 6.2831);
+    vec3 v2 = voronoi(p * 9.5 + 11.0);
+    float fine = exp(-(v2.y - v2.x) * 20.0);
+
+    // scintillii
+    vec2 sp = p * 26.0;
+    vec2 sg = floor(sp);
+    float sh = hash(sg);
+    vec2 sc = 0.25 + 0.5 * hash22(sg + 5.0);
+    float dotShape = smoothstep(0.30, 0.0, length(fract(sp) - sc));
+    float twinkle = step(0.90, sh) * dotShape * pow(0.5 + 0.5 * sin(t * 3.0 + sh * 60.0), 4.0);
+
+    float haze = 0.20 + 0.18 * fbm(p * 2.0 + t * 0.05);
+    float a = haze + frost * (0.35 + 0.25 * facet) + cracks * (0.25 + 0.5 * frost)
+            + fine * 0.18 * frost + twinkle * 0.9;
+    float mask = 1.0 - smoothstep(0.80, 1.16, d);
+    a = clamp(a, 0.0, 1.0) * mask;
+
+    vec3 deep = vec3(0.22, 0.55, 0.95);
+    vec3 pale = vec3(0.82, 0.95, 1.0);
+    float bright = clamp(0.25 + frost * 0.5 + cracks * 0.5 + facet * 0.2 + twinkle, 0.0, 1.0);
+    vec3 col = mix(deep, pale, bright);
+    col = mix(col, vec3(1.0), clamp(twinkle, 0.0, 1.0));
+    fragColor = vec4(col * a, a);
+}
+
+
+void main() {
+  vec2 fragCoord = gl_FragCoord.xy;
+  vec2 q = (2.0 * fragCoord - u_resolution.xy) / u_resolution.y;
+  vec4 col;
+  mainImage(col, fragCoord);
+  // stessa idea della maschera poligonale di Magnetron: ritaglia la sagoma
+  bool inside = (u_shape == 0) ? (length(q) <= 1.0) : (max(abs(q.x), abs(q.y)) <= 1.0);
+  fragColor = inside ? col : vec4(0.0);
+}
+</script>
+
+<script>
+(function () {
+  const canvas = document.getElementById('c');
+  const gl = canvas.getContext('webgl2');
+  if (!gl) { document.body.textContent = 'WebGL2 non disponibile'; return; }
+  function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  }
+  const vs = compile(gl.VERTEX_SHADER, `#version 300 es
+const vec2 pos[3] = vec2[3](vec2(-1.0,-1.0), vec2(3.0,-1.0), vec2(-1.0,3.0));
+void main() { gl_Position = vec4(pos[gl_VertexID], 0.0, 1.0); }`);
+  const fs = compile(gl.FRAGMENT_SHADER, document.getElementById('fs').textContent.replace(/^\s+/, ''));
+  const prog = gl.createProgram();
+  gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+  const uRes = gl.getUniformLocation(prog, 'u_resolution');
+  const uTime = gl.getUniformLocation(prog, 'u_time');
+  const uShape = gl.getUniformLocation(prog, 'u_shape');
+  const sel = document.getElementById('shape');
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const size = Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.92 * dpr);
+    if (canvas.width !== size) { canvas.width = size; canvas.height = size; }
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  }
+  window.addEventListener('resize', resize); resize();
+  const t0 = performance.now();
+  function frame() {
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+    gl.uniform1f(uTime, (performance.now() - t0) / 1000 + (new URLSearchParams(location.search).get('t') | 0));
+    gl.uniform1i(uShape, +sel.value);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
